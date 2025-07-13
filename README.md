@@ -19,8 +19,8 @@ ML Model: Isolation Forest
 Gen AI: IBM Watsonx (Granite + RAG) *(Optional)*
 Getting Started
 Clone the Repository:
-git clone https://github.com//helicopter-digital-twin.git
-cd helicopter-digital-twin
+git clone https://github.com/vedantjn27/Helicopter_fuel_injection_digital_twin.git
+cd Helicopter_fuel_injection_digital_twin
 
 Start Backend:
 cd backend
