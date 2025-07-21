@@ -7,7 +7,9 @@ import {
   Database,
   Layers3,
   PlayCircle,
-  Download
+  Download,
+  Beaker,
+  Wrench
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -19,11 +21,13 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange }) => {
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: Gauge },
     { id: 'visualization', label: '3D System', icon: Layers3 },
+    { id: 'internal', label: 'Internal View', icon: Wrench },
     { id: 'charts', label: 'Real-Time Charts', icon: Activity },
     { id: 'alerts', label: 'Alerts', icon: AlertTriangle },
     { id: 'faults', label: 'Fault Simulation', icon: Settings },
     { id: 'playback', label: 'Playback', icon: PlayCircle },
     { id: 'export', label: 'Export Data', icon: Download },
+    { id: 'simulation', label: 'Tank Simulation', icon: Beaker },
   ];
 
   return (
