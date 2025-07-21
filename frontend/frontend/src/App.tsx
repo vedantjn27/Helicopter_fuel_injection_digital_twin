@@ -5,10 +5,15 @@ import TelemetryGauges from './components/Dashboard/TelemetryGauges';
 import SystemDiagram from './components/Dashboard/SystemDiagram';
 import RealTimeChart from './components/Charts/RealTimeChart';
 import FuelSystem3D from './components/Visualization/FuelSystem3D';
+import InternalHelicopterView from './components/Visualization/InternalHelicopterView';
 import AlertsPanel from './components/Alerts/AlertsPanel';
 import FaultPanel from './components/FaultSimulation/FaultPanel';
 import PlaybackPanel from './components/Playback/PlaybackPanel';
 import ExportPanel from './components/Export/ExportPanel';
+import FuelTankSimulation from './components/Simulation/FuelTankSimulation';
+import TankStatus from './components/Dashboard/TankStatus';
+import SafetyRecommendations from './components/Dashboard/SafetyRecommendations';
+import MaintenancePanel from './components/Dashboard/MaintenancePanel';
 import { useRealTimeData, useHistoricalData } from './hooks/useRealTimeData';
 
 function App() {
@@ -23,6 +28,13 @@ function App() {
           <div className="space-y-6">
             <TelemetryGauges data={currentData} />
             <SystemDiagram data={currentData} />
+            
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <TankStatus data={currentData} />
+              <SafetyRecommendations data={currentData} />
+            </div>
+            
+            <MaintenancePanel data={currentData} />
             
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <RealTimeChart
@@ -45,6 +57,16 @@ function App() {
 
       case 'visualization':
         return <FuelSystem3D data={currentData} />;
+
+      case 'internal':
+        return (
+          <div className="h-full w-full">
+            <InternalHelicopterView
+              data={currentData}
+              onClose={() => setActiveTab('visualization')}
+            />
+          </div>
+        );
 
       case 'charts':
         return (
@@ -98,6 +120,9 @@ function App() {
 
       case 'export':
         return <ExportPanel />;
+
+      case 'simulation':
+        return <FuelTankSimulation data={currentData} />;
 
       default:
         return null;
