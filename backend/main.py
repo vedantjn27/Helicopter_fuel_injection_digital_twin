@@ -15,6 +15,7 @@ from bson.json_util import dumps
 from sklearn.ensemble import IsolationForest
 from joblib import dump, load
 import pandas as pd
+import numpy as np 
 from fastapi import Query
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
@@ -25,12 +26,15 @@ import numpy as np
 from fastapi.responses import StreamingResponse, JSONResponse
 from io import StringIO
 from datetime import timedelta
+from collections import Counter
+
 
 # MongoDB setup
 MONGO_URI = "mongodb://localhost:27017"
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["helicopter_db"]
 collection = db["telemetry_logs"]
+collection_tanks = db["fuel_tanks"]
 
 # Load .env
 load_dotenv()
@@ -61,6 +65,17 @@ PORT = 1883
 TOPIC = "helicopter/fuel"
 mqtt_client = mqtt.Client()
 
+fault_to_maintenance = {
+    "Fuel pressure drop detected": "🔧 Inspect and replace fuel filters and pressure regulators.",
+    "Fuel temperature anomaly": "🛠️ Check fuel cooling systems and thermal insulation.",
+    "Flow rate fluctuation": "🛠️ Inspect injectors and clean fuel lines.",
+    "RPM instability": "🔧 Examine engine control unit and throttle sensors.",
+    "Normal operation": "✅ Routine maintenance recommended as per schedule."
+}
+class TankStatusUpdate(BaseModel):
+    tank_id: str
+    status: str  # Should be: Active, Inactive, or Under Maintenance
+
 class FaultRequest(BaseModel):
     type: str
 
@@ -76,7 +91,15 @@ def simulate_fuel_system():
     rpm = random.randint(1500, 4000)
     throttle = round((rpm - 1500) / 25, 2)
     fuel_pressure = round(2.5 + (rpm / 1000) + random.uniform(-0.2, 0.2), 2)
-    fuel_temp = round(30 + (rpm / 200) + random.uniform(-1, 1), 2)
+    # Normal temperature calculation
+    fuel_temp = round(20 + (rpm / 200) + random.uniform(-1, 1), 2)
+
+    # Occasionally introduce anomaly (5% chance)
+    if random.random() < 0.1:  # 10% probability
+        if random.choice(["low", "high"]) == "low":
+            fuel_temp = round(random.uniform(-40, -20), 2)  # Abnormally low temp
+        else:
+            fuel_temp = round(random.uniform(56, 80), 2)    # Abnormally high temp
     flow_rate = round(0.1 * throttle + random.uniform(0, 1), 2)
     return {
         "timestamp": datetime.utcnow(),
@@ -134,9 +157,13 @@ def infer_probable_cause(telemetry: dict) -> str:
 
     if flow_rate < 2 and fuel_pressure > 4:
         return "Fuel injector clog (low flow rate)"
-    elif fuel_temp > 90:
+    elif fuel_temp > 56:
         return "Overheating sensor or coolant failure"
+    elif fuel_temp < -20:
+        return " sensor breakdown or coolant failure"
     elif fuel_pressure < 2:
+        return "Possible fuel leak or pump failure"
+    elif fuel_pressure > 4:
         return "Possible fuel leak or pump failure"
     elif rpm > 5000:
         return "Abnormal RPM surge  throttle malfunction"
@@ -144,6 +171,44 @@ def infer_probable_cause(telemetry: dict) -> str:
         return "Throttle stuck open  excessive fuel injection"
     else:
         return "Anomaly detected, cause unknown"
+
+def infer_safety_measures(cause):
+    recommendations = {
+        "Fuel pressure abnormal likely injector clog":
+            "⚠️ Reduce throttle immediately. Prepare for possible engine power loss. Return to base if feasible.",
+
+        "Fuel temperature high possible overheating":
+            "🔥 Monitor engine temperature. Avoid sudden throttle increases. Prepare for emergency landing if required.",
+
+        "Fuel flow rate inconsistent potential leak or blockage":
+            "🚨 Monitor fuel usage carefully. Avoid aggressive maneuvers. Notify control and prepare for early landing.",
+
+        "Normal operation":
+            "✅ No safety action required. System operating within safe parameters."
+    }
+    return recommendations.get(cause, "⚠️ Follow standard emergency procedures. Refer to flight manual.")
+
+
+def estimate_rul(anomaly_timestamps, observation_window_days=30):
+    """
+    Estimate RUL in days based on anomaly frequency and trends.
+    More anomalies = shorter RUL.
+    """
+    if not anomaly_timestamps:
+        return "🚀 Component operating normally. No critical failure predicted."
+
+    total_anomalies = len(anomaly_timestamps)
+    
+    # Days since first anomaly in observation window
+    days_covered = max(1, (anomaly_timestamps[-1] - anomaly_timestamps[0]).days)
+
+    avg_days_between_anomalies = days_covered / total_anomalies
+
+    # Heuristic RUL estimation
+    estimated_rul = int(avg_days_between_anomalies * 2)  # Multiplier can be tuned
+
+    return estimated_rul
+
 
 # MQTT Publisher Thread with anomaly detection
 def mqtt_publish_loop():
@@ -192,7 +257,7 @@ def mqtt_publish_loop():
         collection.insert_one(jsonable_encoder(telemetry))
 
         print(" Published to MQTT and stored in MongoDB:", telemetry)
-        time.sleep(1)
+        time.sleep(10)
 
 
 # Start MQTT publishing in background
@@ -226,6 +291,37 @@ def get_telemetry_history(limit: int = 20):
             log["timestamp"] = log["timestamp"].isoformat()
     return logs
 
+@app.post("/initialize-tanks")
+def initialize_tanks():
+    tanks = [
+        {"tank_id": "TANK-1", "status": "Active"},
+        {"tank_id": "TANK-2", "status": "Active"},
+        {"tank_id": "TANK-3", "status": "Active"},
+    ]
+    collection_tanks.delete_many({})  # Clear previous tanks (optional)
+    collection_tanks.insert_many(tanks)
+    return {"message": "✅ 3 fuel tanks initialized successfully."}
+
+@app.get("/tanks")
+def get_all_tanks():
+    tanks = list(collection_tanks.find({}, {"_id": 0}))
+    return {"fuel_tanks": tanks}
+
+@app.post("/tanks/update-status")
+def update_tank_status(update: TankStatusUpdate):
+    if update.status not in ["Active", "Inactive", "Under Maintenance"]:
+        return {"error": "❌ Invalid status. Use Active, Inactive, or Under Maintenance."}
+
+    result = collection_tanks.update_one(
+        {"tank_id": update.tank_id},
+        {"$set": {"status": update.status}}
+    )
+
+    if result.matched_count == 0:
+        return {"error": f"❌ Tank {update.tank_id} not found."}
+
+    return {"message": f"✅ {update.tank_id} status updated to {update.status}."}
+
 @app.post("/predict")
 def predict_anomaly():
     if not model:
@@ -238,7 +334,7 @@ def predict_anomaly():
         telemetry["rpm"],
         telemetry["fuel_pressure"],
         telemetry["fuel_temp"],
-        telemetry["flow_rate"]
+        telemetry["flow_rate"],
     ]]
 
     # ✅ Ensure native Python types
@@ -269,6 +365,99 @@ def predict_anomaly():
         **({"probable_cause": telemetry["probable_cause"]} if telemetry["anomaly"] else {}),
         "telemetry": telemetry
     }
+
+@app.post("/safety-recommendation")
+def safety_recommendation():
+    if not model:
+        return {"error": "Anomaly detection model not available. Train it first."}
+
+    telemetry = simulate_fuel_system()
+    telemetry["timestamp"] = datetime.utcnow()
+
+    features = [[
+        telemetry["rpm"],
+        telemetry["fuel_pressure"],
+        telemetry["fuel_temp"],
+        telemetry["flow_rate"]
+    ]]
+
+    pred = model.predict(features)[0]
+    score = model.decision_function(features)[0]
+
+    telemetry["anomaly"] = bool(pred == -1)
+    telemetry["score"] = float(score)
+
+    if telemetry["anomaly"]:
+        cause = infer_probable_cause(telemetry)
+        safety = infer_safety_measures(cause)
+    else:
+        cause = "Normal operation"
+        safety = "✅ No safety action required."
+
+    # Optional: log this result
+    telemetry["probable_cause"] = cause
+    telemetry["safety_measures"] = safety
+    collection.insert_one(jsonable_encoder(telemetry))
+
+    return {
+        "anomaly_detected": telemetry["anomaly"],
+        "probable_cause": cause,
+        "safety_measures": safety,
+        "telemetry": telemetry
+    }
+
+@app.get("/maintenance-suggestions")
+def maintenance_suggestions():
+    # Fetch last 100 anomaly logs (customizable)
+    logs = collection.find({"anomaly": True}).sort("timestamp", -1).limit(100)
+    
+    causes = [log.get("probable_cause", "Unknown") for log in logs]
+    cause_counter = Counter(causes)
+    
+    if not causes:
+        return {
+            "message": "✅ No recent anomalies detected. Routine maintenance recommended."
+        }
+    
+    # Prepare suggestions
+    suggestions = []
+    for cause, count in cause_counter.most_common():
+        suggestion = fault_to_maintenance.get(cause, "⚙️ General system inspection advised.")
+        suggestions.append({
+            "probable_cause": cause,
+            "occurrences": count,
+            "recommended_action": suggestion
+        })
+    
+    return {
+        "maintenance_suggestions": suggestions,
+        "total_anomalies_analyzed": sum(cause_counter.values())
+    }
+
+@app.get("/predictive-maintenance")
+def predictive_maintenance_estimator():
+    # Fetch recent 100 anomalies (or any count you prefer)
+    logs = collection.find({"anomaly": True}).sort("timestamp", 1).limit(100)
+
+    anomaly_timestamps = []
+    for log in logs:
+        ts = log.get("timestamp")
+        if ts:
+            anomaly_timestamps.append(ts)
+
+    if not anomaly_timestamps:
+        rul = "🚀 Component operating normally. No critical failure predicted."
+    else:
+        # Convert MongoDB timestamps to datetime objects
+        anomaly_timestamps = [ts if isinstance(ts, datetime) else datetime.fromisoformat(ts) for ts in anomaly_timestamps]
+        rul = estimate_rul(anomaly_timestamps)
+
+    return {
+        "remaining_useful_life_days_estimated": rul,
+        "total_anomalies_analyzed": len(anomaly_timestamps)
+    }
+
+
 
 @app.get("/alerts")
 def get_anomaly_alerts(limit: int = Query(10, description="Number of recent anomalies to return")):
